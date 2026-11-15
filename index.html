@@ -72,7 +72,7 @@
       שינוי כאן מתעדכן מיד בתמונה. כדי שישאר קבוע לכולם ובכל מכשיר – לוחצים "שמור באתר".<br>
       מתחת לכל שדה כתוב באפור הערך לפי אתר "ישיבה", כדי שאפשר יהיה תמיד לחזור אליו.<br>
       צאת שבת אפשר לחשב לפי מעלות (מיקום השמש מתחת לאופק – משתנה לפי עונה) או לפי מספר קבוע של דקות אחרי השקיעה.<br>
-      <a href="#" id="forgetToken" style="color:var(--muted)">ניתוק מפתח השמירה מהמכשיר הזה</a>
+      השמירה נעשית דרך חשבון ה-GitHub שלך: נפתח עמוד מוכן, לוחצים שם על הכפתור הירוק – וזהו.
     </div>
   </details>
 </div>
@@ -123,8 +123,9 @@ const ROWS_Y = [678, 850, 1011.5]; // centers of the three white rows
 const YESHIVA = CITIES.map(c => ({ c: c.c, mode: 'deg', x: c.x, xm: 40, rt: 72 }));
 const clone = a => a.map(d => Object.assign({}, d));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const REPO = 'niholmediayshbg-lab/zmanei-shabbat', SFILE = 'settings.json', TKEY = 'zmanei-shabbat-token';
-let SAVED = clone(YESHIVA), SETTINGS = clone(YESHIVA), savedSha = null;
+const REPO = 'niholmediayshbg-lab/zmanei-shabbat', SFILE = 'settings.json';
+const OWNER = REPO.split('/')[0], ISSUE_TITLE = 'הגדרות זמני שבת';
+let SAVED = clone(YESHIVA), SETTINGS = clone(YESHIVA);
 function normalize(arr) {
   if (!Array.isArray(arr)) return null;
   return CITIES.map((c, i) => {
@@ -136,14 +137,22 @@ function normalize(arr) {
   });
 }
 const isDefault = () => same(SETTINGS, YESHIVA);
-async function loadSiteSettings() {
-  let arr = null;
-  try { // GitHub API gives the newest version immediately after a save
-    const r = await fetch('https://api.github.com/repos/' + REPO + '/contents/' + SFILE + '?t=' + Date.now(), { cache: 'no-store' });
-    if (r.ok) { const j = await r.json(); savedSha = j.sha; arr = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\n/g, ''))))).cities; }
+// Saved settings live in the newest GitHub issue titled ISSUE_TITLE opened by the site owner (no key needed to read).
+async function fetchIssueSettings() {
+  try {
+    const r = await fetch('https://api.github.com/repos/' + REPO + '/issues?state=all&creator=' + OWNER + '&sort=created&direction=desc&per_page=30&t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return null;
+    for (const it of await r.json()) {
+      if (it.title !== ISSUE_TITLE || !it.user || it.user.login.toLowerCase() !== OWNER.toLowerCase()) continue;
+      const m = (it.body || '').match(/```(?:json)?\s*([\s\S]*?)```/);
+      try { const n = normalize(JSON.parse(m ? m[1] : it.body).cities); if (n) return n; } catch (e) {}
+    }
   } catch (e) {}
-  if (!arr) { try { const r = await fetch(SFILE + '?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) arr = (await r.json()).cities; } catch (e) {} }
-  const n = normalize(arr);
+  return null;
+}
+async function loadSiteSettings() {
+  let n = await fetchIssueSettings();
+  if (!n) { try { const r = await fetch(SFILE + '?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) n = normalize((await r.json()).cities); } catch (e) {} }
   if (n) { SAVED = n; SETTINGS = clone(n); }
 }
 
@@ -331,46 +340,28 @@ function buildSettings() {
 }
 document.getElementById('resetSettings').onclick = () => { SETTINGS = clone(YESHIVA); buildSettings(); setWeek(sat); };
 document.getElementById('cancelSettings').onclick = () => { SETTINGS = clone(SAVED); buildSettings(); setWeek(sat); };
-document.getElementById('forgetToken').onclick = e => {
-  e.preventDefault(); try { localStorage.removeItem(TKEY); } catch (er) {}
-  saveMsg.textContent = 'מפתח השמירה נמחק מהמכשיר הזה'; saveMsg.style.color = '';
+let pendingSave = false;
+document.getElementById('saveSite').onclick = () => {
+  const json = JSON.stringify({ cities: CITIES.map((c, i) => Object.assign({ city: c.name }, SETTINGS[i])) }, null, 2);
+  const body = 'הגדרות חישוב זמני השבת לאתר. אין צורך לשנות כלום – רק ללחוץ על הכפתור הירוק למטה.\n\n```json\n' + json + '\n```';
+  window.open('https://github.com/' + REPO + '/issues/new?title=' + encodeURIComponent(ISSUE_TITLE) + '&body=' + encodeURIComponent(body), '_blank');
+  pendingSave = true;
+  saveMsg.textContent = 'נפתח עמוד ב-GitHub – לחץ שם על הכפתור הירוק (Create), ואז חזור לכאן.';
+  saveMsg.style.color = 'var(--gold)';
 };
-function getToken(force) {
-  let t = null; try { t = localStorage.getItem(TKEY); } catch (e) {}
-  if (!t || force) {
-    t = prompt('כדי לשמור באתר צריך "מפתח שמירה" של GitHub (פעם אחת בכל מכשיר).\nהדבק כאן את המפתח:');
-    if (!t) return null; t = t.trim();
-    try { localStorage.setItem(TKEY, t); } catch (e) {}
-  }
-  return t;
-}
-document.getElementById('saveSite').onclick = async () => {
-  let token = getToken(false); if (!token) return;
-  saveMsg.textContent = 'שומר...'; saveMsg.style.color = '';
-  const body = { cities: CITIES.map((c, i) => Object.assign({ city: c.name }, SETTINGS[i])), savedAt: new Date().toISOString() };
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(body, null, 2) + '\n')));
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const h = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' };
-      const cur = await fetch('https://api.github.com/repos/' + REPO + '/contents/' + SFILE + '?t=' + Date.now(), { headers: h, cache: 'no-store' });
-      if (cur.status === 401) { token = getToken(true); if (!token) return; continue; }
-      const sha = cur.ok ? (await cur.json()).sha : undefined;
-      const r = await fetch('https://api.github.com/repos/' + REPO + '/contents/' + SFILE, {
-        method: 'PUT', headers: h,
-        body: JSON.stringify({ message: 'עדכון הגדרות חישוב זמני שבת', content, sha })
-      });
-      if (r.status === 401 || r.status === 403 || r.status === 404) {
-        if (attempt === 0) { token = getToken(true); if (!token) return; continue; }
-        throw new Error('למפתח אין הרשאת כתיבה למאגר');
-      }
-      if (!r.ok) throw new Error('GitHub החזיר שגיאה ' + r.status);
-      savedSha = (await r.json()).content.sha;
-      SAVED = clone(SETTINGS); updateSaveState(); setWeek(sat);
-      saveMsg.textContent = '✔ נשמר באתר. מעכשיו זה החישוב בכל מכשיר.';
+window.addEventListener('focus', async () => {
+  if (!pendingSave) return;
+  const want = JSON.stringify(SETTINGS);
+  for (let i = 0; i < 4; i++) {
+    const n = await fetchIssueSettings();
+    if (n && JSON.stringify(n) === want) {
+      pendingSave = false; SAVED = n; updateSaveState();
+      saveMsg.textContent = '✔ נשמר באתר. מעכשיו זה החישוב בכל מכשיר.'; saveMsg.style.color = '';
       return;
-    } catch (e) { saveMsg.textContent = 'השמירה נכשלה: ' + e.message; saveMsg.style.color = '#ff9a8a'; return; }
+    }
+    await new Promise(r => setTimeout(r, 2500));
   }
-};
+});
 
 document.getElementById('prev').onclick = () => { const d = new Date(sat); d.setDate(d.getDate() - 7); setWeek(d); };
 document.getElementById('next').onclick = () => { const d = new Date(sat); d.setDate(d.getDate() + 7); setWeek(d); };
