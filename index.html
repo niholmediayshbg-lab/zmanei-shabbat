@@ -27,6 +27,7 @@
   td input.edited { border-color:var(--gold); }
   td select { font:inherit; padding:5px; border-radius:6px; border:1px solid var(--line); background:#0c3a3d; color:var(--text); }
   #settings td input { max-width:70px; }
+  .ref { font-size:12px; color:var(--muted); margin-top:3px; }
   .parasha-row input { max-width:260px; }
   .note { font-size:13px; color:var(--muted); margin-top:8px; line-height:1.6; }
   .scroll { overflow-x:auto; }
@@ -51,9 +52,8 @@
     </div>
     <div class="note">
       אפשר לשנות כל ערך והתמונה תתעדכן מיד. שינוי ידני מסומן בצהוב ולא נשמר לשבוע הבא.<br>
-      שיטת החישוב (כמו באתר "ישיבה"): כניסה – ירושלים 40 דק׳ לפני השקיעה, חיפה ומצפה יריחו 30, באר שבע 22, תל אביב 21.
-      צאת שבת – השמש 8.5° מתחת לאופק. רבנו תם – 72 דקות אחרי השקיעה.
-      החישוב נעשה כולו בתוך הקובץ, בלי חיבור לשום אתר.
+      כדי לשנות את שיטת החישוב באופן קבוע – ב"הגדרות חישוב הזמנים" למטה.
+      החישוב נעשה כולו בתוך הדף, בלי תלות באף אתר זמנים.
     </div>
   </details>
 
@@ -63,12 +63,16 @@
     <table id="settings"></table>
     </div>
     <div class="bar" style="margin-top:10px">
-      <button id="resetSettings">חזרה לברירת המחדל (כמו אתר "ישיבה")</button>
+      <button class="main" id="saveSite">💾 שמור באתר</button>
+      <button id="cancelSettings">ביטול שינויים שלא נשמרו</button>
+      <button id="resetSettings">החזר להגדרות של אתר "ישיבה"</button>
+      <span class="info" id="saveMsg"></span>
     </div>
     <div class="note">
-      השינויים נשמרים אוטומטית בדפדפן הזה ובמכשיר הזה בלבד, ונשארים גם בשבועות הבאים.
-      במחשב או בטלפון אחר יופיעו ההגדרות הרגילות.<br>
-      צאת שבת אפשר לחשב לפי מעלות (מיקום השמש מתחת לאופק, משתנה לפי עונה) או לפי מספר קבוע של דקות אחרי השקיעה.
+      שינוי כאן מתעדכן מיד בתמונה. כדי שישאר קבוע לכולם ובכל מכשיר – לוחצים "שמור באתר".<br>
+      מתחת לכל שדה כתוב באפור הערך לפי אתר "ישיבה", כדי שאפשר יהיה תמיד לחזור אליו.<br>
+      צאת שבת אפשר לחשב לפי מעלות (מיקום השמש מתחת לאופק – משתנה לפי עונה) או לפי מספר קבוע של דקות אחרי השקיעה.<br>
+      <a href="#" id="forgetToken" style="color:var(--muted)">ניתוק מפתח השמירה מהמכשיר הזה</a>
     </div>
   </details>
 </div>
@@ -114,18 +118,34 @@ const CITIES = [
 const ROWS_Y = [678, 850, 1011.5]; // centers of the three white rows
 
 /* ---------- Calculation settings (editable, saved in this browser) ---------- */
-const DEFAULTS = CITIES.map(c => ({ c: c.c, mode: 'deg', x: c.x, xm: 40, rt: 72 }));
-const SKEY = 'zmanei-shabbat-settings-v1';
-let SETTINGS = loadSettings();
-function loadSettings() {
-  try {
-    const s = JSON.parse(localStorage.getItem(SKEY));
-    if (Array.isArray(s) && s.length === CITIES.length) return s.map((v, i) => Object.assign({}, DEFAULTS[i], v));
-  } catch (e) {}
-  return DEFAULTS.map(d => Object.assign({}, d));
+// YESHIVA = the method of the "Yeshiva" site (never changes). SAVED = what is saved in the site (settings.json).
+// SETTINGS = what is currently shown (may include unsaved changes).
+const YESHIVA = CITIES.map(c => ({ c: c.c, mode: 'deg', x: c.x, xm: 40, rt: 72 }));
+const clone = a => a.map(d => Object.assign({}, d));
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const REPO = 'niholmediayshbg-lab/zmanei-shabbat', SFILE = 'settings.json', TKEY = 'zmanei-shabbat-token';
+let SAVED = clone(YESHIVA), SETTINGS = clone(YESHIVA), savedSha = null;
+function normalize(arr) {
+  if (!Array.isArray(arr)) return null;
+  return CITIES.map((c, i) => {
+    const v = arr.find(x => x && x.city === c.name) || arr[i] || {};
+    const o = Object.assign({}, YESHIVA[i]);
+    ['c', 'x', 'xm', 'rt'].forEach(k => { if (v[k] !== undefined && !isNaN(+v[k])) o[k] = +v[k]; });
+    if (v.mode === 'deg' || v.mode === 'min') o.mode = v.mode;
+    return o;
+  });
 }
-function saveSettings() { try { localStorage.setItem(SKEY, JSON.stringify(SETTINGS)); } catch (e) {} }
-const isDefault = () => JSON.stringify(SETTINGS) === JSON.stringify(DEFAULTS);
+const isDefault = () => same(SETTINGS, YESHIVA);
+async function loadSiteSettings() {
+  let arr = null;
+  try { // GitHub API gives the newest version immediately after a save
+    const r = await fetch('https://api.github.com/repos/' + REPO + '/contents/' + SFILE + '?t=' + Date.now(), { cache: 'no-store' });
+    if (r.ok) { const j = await r.json(); savedSha = j.sha; arr = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\n/g, ''))))).cities; }
+  } catch (e) {}
+  if (!arr) { try { const r = await fetch(SFILE + '?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) arr = (await r.json()).cities; } catch (e) {} }
+  const n = normalize(arr);
+  if (n) { SAVED = n; SETTINGS = clone(n); }
+}
 
 function zmanim(sat) {
   const fri = new Date(sat); fri.setDate(fri.getDate() - 1);
@@ -238,7 +258,7 @@ function setWeek(d) {
   sat = t; overrides = {};
   data = zmanim(sat); parashaText = HEB(sat);
   dateIn.value = iso(sat);
-  info.textContent = 'שבת ' + sat.toLocaleDateString('he-IL') + (isDefault() ? '' : ' · ⚙ הגדרות חישוב מותאמות');
+  info.textContent = 'שבת ' + sat.toLocaleDateString('he-IL') + (isDefault() ? '' : ' · ⚙ חישוב מותאם (שונה מאתר "ישיבה")');
   buildEditor(); draw();
 }
 const val = (key, def) => (key in overrides ? overrides[key] : def);
@@ -274,41 +294,83 @@ function buildEditor() {
   });
 }
 
-const setT = document.getElementById('settings');
+const setT = document.getElementById('settings'), saveMsg = document.getElementById('saveMsg');
+const ref = t => '<div class="ref">ישיבה: ' + t + '</div>';
+function updateSaveState() {
+  const dirty = !same(SETTINGS, SAVED);
+  saveMsg.textContent = dirty ? 'יש שינויים שלא נשמרו באתר' : (isDefault() ? 'כרגע: לפי אתר "ישיבה"' : 'כרגע: חישוב מותאם (שמור באתר)');
+  saveMsg.style.color = dirty ? 'var(--gold)' : '';
+}
 function buildSettings() {
   let h = '<tr><th>עיר</th><th>כניסה: דקות<br>לפני השקיעה</th><th>צאת שבת:<br>שיטה</th><th>צאת שבת:<br>ערך</th><th>ר״ת: דקות<br>אחרי השקיעה</th></tr>';
   CITIES.forEach((c, i) => {
-    const s = SETTINGS[i];
+    const s = SETTINGS[i], y = YESHIVA[i];
     h += '<tr><th>' + c.name + '</th>' +
-      '<td><input type="number" min="0" max="90" step="1" data-i="' + i + '" data-f="c" value="' + s.c + '"></td>' +
+      '<td><input type="number" min="0" max="90" step="1" data-i="' + i + '" data-f="c" value="' + s.c + '">' + ref(y.c + ' דק׳') + '</td>' +
       '<td><select data-i="' + i + '" data-f="mode">' +
         '<option value="deg"' + (s.mode === 'deg' ? ' selected' : '') + '>מעלות</option>' +
-        '<option value="min"' + (s.mode === 'min' ? ' selected' : '') + '>דקות</option></select></td>' +
+        '<option value="min"' + (s.mode === 'min' ? ' selected' : '') + '>דקות</option></select>' + ref('מעלות') + '</td>' +
       '<td>' + (s.mode === 'deg'
         ? '<input type="number" min="3" max="20" step="0.1" data-i="' + i + '" data-f="x" value="' + s.x + '"> °'
-        : '<input type="number" min="0" max="120" step="1" data-i="' + i + '" data-f="xm" value="' + s.xm + '"> דק׳') + '</td>' +
-      '<td><input type="number" min="0" max="120" step="1" data-i="' + i + '" data-f="rt" value="' + s.rt + '"></td></tr>';
+        : '<input type="number" min="0" max="120" step="1" data-i="' + i + '" data-f="xm" value="' + s.xm + '"> דק׳') + ref(y.x + '°') + '</td>' +
+      '<td><input type="number" min="0" max="120" step="1" data-i="' + i + '" data-f="rt" value="' + s.rt + '">' + ref(y.rt + ' דק׳') + '</td></tr>';
   });
   setT.innerHTML = h;
   setT.querySelectorAll('input, select').forEach(el => {
     const i = +el.dataset.i, f = el.dataset.f;
-    if (el.tagName === 'INPUT' && String(SETTINGS[i][f]) !== String(DEFAULTS[i][f])) el.classList.add('edited');
+    const mark = () => el.classList.toggle('edited', String(SETTINGS[i][f]) !== String(YESHIVA[i][f]));
+    mark();
     el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
       if (el.tagName === 'INPUT' && (el.value === '' || isNaN(+el.value))) return;
       SETTINGS[i][f] = el.tagName === 'SELECT' ? el.value : +el.value;
-      saveSettings();
-      if (el.tagName === 'SELECT') buildSettings();
-      else el.classList.toggle('edited', String(SETTINGS[i][f]) !== String(DEFAULTS[i][f]));
+      if (el.tagName === 'SELECT') buildSettings(); else { mark(); updateSaveState(); }
       setWeek(sat);
     });
   });
+  updateSaveState();
 }
-document.getElementById('resetSettings').onclick = () => {
-  SETTINGS = DEFAULTS.map(d => Object.assign({}, d));
-  try { localStorage.removeItem(SKEY); } catch (e) {}
-  buildSettings(); setWeek(sat);
+document.getElementById('resetSettings').onclick = () => { SETTINGS = clone(YESHIVA); buildSettings(); setWeek(sat); };
+document.getElementById('cancelSettings').onclick = () => { SETTINGS = clone(SAVED); buildSettings(); setWeek(sat); };
+document.getElementById('forgetToken').onclick = e => {
+  e.preventDefault(); try { localStorage.removeItem(TKEY); } catch (er) {}
+  saveMsg.textContent = 'מפתח השמירה נמחק מהמכשיר הזה'; saveMsg.style.color = '';
 };
-buildSettings();
+function getToken(force) {
+  let t = null; try { t = localStorage.getItem(TKEY); } catch (e) {}
+  if (!t || force) {
+    t = prompt('כדי לשמור באתר צריך "מפתח שמירה" של GitHub (פעם אחת בכל מכשיר).\nהדבק כאן את המפתח:');
+    if (!t) return null; t = t.trim();
+    try { localStorage.setItem(TKEY, t); } catch (e) {}
+  }
+  return t;
+}
+document.getElementById('saveSite').onclick = async () => {
+  let token = getToken(false); if (!token) return;
+  saveMsg.textContent = 'שומר...'; saveMsg.style.color = '';
+  const body = { cities: CITIES.map((c, i) => Object.assign({ city: c.name }, SETTINGS[i])), savedAt: new Date().toISOString() };
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(body, null, 2) + '\n')));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const h = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' };
+      const cur = await fetch('https://api.github.com/repos/' + REPO + '/contents/' + SFILE + '?t=' + Date.now(), { headers: h, cache: 'no-store' });
+      if (cur.status === 401) { token = getToken(true); if (!token) return; continue; }
+      const sha = cur.ok ? (await cur.json()).sha : undefined;
+      const r = await fetch('https://api.github.com/repos/' + REPO + '/contents/' + SFILE, {
+        method: 'PUT', headers: h,
+        body: JSON.stringify({ message: 'עדכון הגדרות חישוב זמני שבת', content, sha })
+      });
+      if (r.status === 401 || r.status === 403 || r.status === 404) {
+        if (attempt === 0) { token = getToken(true); if (!token) return; continue; }
+        throw new Error('למפתח אין הרשאת כתיבה למאגר');
+      }
+      if (!r.ok) throw new Error('GitHub החזיר שגיאה ' + r.status);
+      savedSha = (await r.json()).content.sha;
+      SAVED = clone(SETTINGS); updateSaveState(); setWeek(sat);
+      saveMsg.textContent = '✔ נשמר באתר. מעכשיו זה החישוב בכל מכשיר.';
+      return;
+    } catch (e) { saveMsg.textContent = 'השמירה נכשלה: ' + e.message; saveMsg.style.color = '#ff9a8a'; return; }
+  }
+};
 
 document.getElementById('prev').onclick = () => { const d = new Date(sat); d.setDate(d.getDate() - 7); setWeek(d); };
 document.getElementById('next').onclick = () => { const d = new Date(sat); d.setDate(d.getDate() + 7); setWeek(d); };
@@ -319,7 +381,9 @@ document.getElementById('download').onclick = () => {
   a.href = cv.toDataURL('image/png'); a.click();
 };
 
+buildSettings();
 setWeek(upcomingSaturday());
+loadSiteSettings().then(() => { buildSettings(); setWeek(sat); });
 bg.onload = draw;
 if (document.fonts) {
   Promise.all(['700 74px "Amatic SC"', '600 50px Oswald'].map(f => document.fonts.load(f, 'פרשת 19:10'))).then(draw).catch(() => {});
